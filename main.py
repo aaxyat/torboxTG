@@ -1212,10 +1212,25 @@ Type /help for more information.
             )
 
         # Send initial processing message
-        processing_msg = await update.message.reply_text(
-            initial_text,
-            parse_mode="Markdown",
-        )
+        try:
+            processing_msg = await update.message.reply_text(
+                initial_text,
+                parse_mode="Markdown",
+            )
+        except telegram.error.BadRequest as e:
+            if "Message to be replied not found" in str(e):
+                # Original message was deleted, send a new message instead
+                logger.warning(
+                    f"Original message was deleted, sending new message to chat {update.effective_chat.id}"
+                )
+                processing_msg = await self.application.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=initial_text,
+                    parse_mode="Markdown",
+                )
+            else:
+                # Re-raise other BadRequest errors
+                raise
 
         # We'll track this message for cleanup once we get a download_id
 
@@ -1950,6 +1965,51 @@ Type /help for more information.
 
         return video_limit, document_limit
 
+    async def error_handler(
+        self, update: object, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Global error handler for the bot"""
+        try:
+            logger.error(f"Exception while handling an update: {context.error}")
+
+            # Handle specific error types
+            if isinstance(context.error, telegram.error.BadRequest):
+                error_msg = str(context.error)
+                if "Message to be replied not found" in error_msg:
+                    logger.warning(
+                        "Attempted to reply to a deleted message - this is harmless"
+                    )
+                    return
+                elif "Message is not modified" in error_msg:
+                    logger.warning(
+                        "Attempted to edit message with same content - this is harmless"
+                    )
+                    return
+                elif "Chat not found" in error_msg:
+                    logger.warning("Chat was deleted or bot was removed - cleaning up")
+                    return
+            elif isinstance(context.error, telegram.error.Forbidden):
+                logger.warning("Bot was blocked by user or removed from chat")
+                return
+            elif isinstance(context.error, telegram.error.NetworkError):
+                logger.warning(f"Network error occurred: {context.error}")
+                return
+
+            # For other errors, try to notify the user if possible
+            if update and hasattr(update, "effective_chat") and update.effective_chat:
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="⚠️ An unexpected error occurred. The bot administrators have been notified.",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    # If we can't send the error message, just log it
+                    pass
+
+        except Exception as e:
+            logger.error(f"Error in error handler: {e}")
+
     def create_application(self) -> Application:
         """Create and configure the Telegram application"""
         if self.application is None:
@@ -1964,6 +2024,9 @@ Type /help for more information.
                 logger.info(f"Configured local Bot API server: {api_url}")
 
             self.application = builder.build()
+
+            # Add error handler
+            self.application.add_error_handler(self.error_handler)
 
             # Add handlers
             self.application.add_handler(CommandHandler("auth", self.auth_command))
