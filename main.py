@@ -26,6 +26,7 @@ from asyncio_throttle import Throttler
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest, Forbidden, NetworkError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -1217,7 +1218,7 @@ Type /help for more information.
                 initial_text,
                 parse_mode="Markdown",
             )
-        except telegram.error.BadRequest as e:
+        except BadRequest as e:
             if "Message to be replied not found" in str(e):
                 # Original message was deleted, send a new message instead
                 logger.warning(
@@ -1973,7 +1974,7 @@ Type /help for more information.
             logger.error(f"Exception while handling an update: {context.error}")
 
             # Handle specific error types
-            if isinstance(context.error, telegram.error.BadRequest):
+            if isinstance(context.error, BadRequest):
                 error_msg = str(context.error)
                 if "Message to be replied not found" in error_msg:
                     logger.warning(
@@ -1988,10 +1989,10 @@ Type /help for more information.
                 elif "Chat not found" in error_msg:
                     logger.warning("Chat was deleted or bot was removed - cleaning up")
                     return
-            elif isinstance(context.error, telegram.error.Forbidden):
+            elif isinstance(context.error, Forbidden):
                 logger.warning("Bot was blocked by user or removed from chat")
                 return
-            elif isinstance(context.error, telegram.error.NetworkError):
+            elif isinstance(context.error, NetworkError):
                 logger.warning(f"Network error occurred: {context.error}")
                 return
 
