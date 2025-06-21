@@ -1,31 +1,111 @@
-## 🤖 TorboxTG Bot
+# 🤖 TorboxTG Bot
 
-A powerful Telegram bot that debrids Terabox links using the Torbox API and delivers files directly to your Telegram chats.
+A powerful, enterprise-grade Telegram bot that debrids Terabox links using the Torbox API and delivers files directly to your Telegram chats. Now with PostgreSQL database integration for scalability and reliability.
 
 ## ✨ Features
 
-- **🔗 Universal Terabox Support**: Accepts links from multiple Terabox domains
-- **🔄 Smart URL Normalization**: Automatically converts alternative domains to terabox.com for API compatibility
-- **💬 Dual Chat Support**: Works seamlessly in both private chats and groups
-- **📱 Smart Group Behavior**: Only responds when explicitly called in groups
-- **⚡ Asynchronous Processing**: Non-blocking download monitoring
-- **📊 Real-time Progress**: Live status updates during processing
-- **🎥 Intelligent Upload**: Detects video files for optimal Telegram delivery
-- **👤 User Tracking**: Personal download history and status
-- **🛡️ Rate Limiting**: Built-in API protection
-- **🗂️ File Management**: Automatic temporary file cleanup
+### 🔗 **Link Processing**
+- **Universal Terabox Support**: Accepts links from multiple Terabox domains
+- **Smart URL Normalization**: Automatically converts alternative domains to terabox.com for API compatibility
+- **Intelligent Link Detection**: Automatically processes Terabox links in messages (no commands needed in private chats)
+- **Multiple Link Support**: Process multiple Terabox links in a single message
 
-## 📋 Bot Setup
+### 💬 **Chat Integration**
+- **Dual Chat Support**: Works seamlessly in both private chats and groups
+- **Smart Group Behavior**: Only responds when explicitly mentioned or using commands
+- **User Authentication**: Secure authentication system with personal auth keys
+- **Admin Controls**: Special admin-only features for group management
 
-### No Separate Group Token Needed!
+### 🗄️ **Database & Scalability**
+- **PostgreSQL Integration**: Enterprise-grade database storage via Neon.tech
+- **Duplicate Detection**: Smart caching prevents re-downloading the same files
+- **User Management**: Persistent user authentication across bot restarts
+- **Download History**: Complete download cache with automatic cleanup
+- **Multi-Instance Support**: Multiple bot instances can share the same database
 
-**Important**: You only need **ONE** Telegram bot token that works for:
-- ✅ Private chats (direct messages)
-- ✅ Group chats 
-- ✅ Supergroups
-- ✅ Channels
+### ⚡ **Performance & Reliability**
+- **Asynchronous Processing**: Non-blocking download monitoring with queue system
+- **Concurrent Downloads**: Support for multiple simultaneous downloads (configurable limit)
+- **Rate Limiting**: Built-in API protection with intelligent throttling
+- **Graceful Shutdown**: Professional Ctrl+C handling with clean resource cleanup
+- **Auto-Recovery**: Robust error handling with automatic retries
 
-The bot just needs to be **added to groups by an admin** - no separate tokens required!
+### 📊 **Monitoring & Status**
+- **Real-time Progress**: Live status updates during processing with progress bars
+- **Download Queue**: View active and queued downloads with position tracking
+- **Statistics**: Database statistics and download metrics
+- **Comprehensive Logging**: Detailed logs with UTF-8 support and rotation
+
+### 🎥 **File Handling**
+- **Intelligent Upload**: Detects video files for optimal Telegram delivery
+- **Large File Support**: Up to 2GB files with local Bot API server
+- **Smart File Types**: Automatic video/document detection and appropriate upload
+- **Temporary File Management**: Automatic cleanup with configurable temp directories
+
+### 🛡️ **Security & Admin Features**
+- **Nuclear Option**: `/nuke` command to delete all messages in a chat (with confirmation)
+- **Admin Verification**: Group admin checks for destructive operations
+- **Secure Authentication**: Environment-based auth key system
+- **Permission Controls**: Different behavior for private vs group chats
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.9 or higher
+- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
+- A Torbox API token (from [Torbox.app](https://torbox.app))
+- A Neon.tech PostgreSQL database (free tier available)
+
+### Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository_url>
+   cd torboxTG
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   # Using uv (recommended)
+   uv sync
+   
+   # Or using pip
+   pip install -e .
+   ```
+
+3. **Set up Neon.tech Database:**
+   - Go to [Neon.tech](https://neon.tech) and create a free account
+   - Create a new database project
+   - Copy your PostgreSQL connection string from the dashboard
+   - It should look like: `postgresql://username:password@hostname/database?sslmode=require`
+
+4. **Configure environment variables**:
+   ```bash
+   cp config.env.template .env
+   ```
+   
+   Edit the `.env` file with your credentials:
+   ```env
+   TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+   TORBOX_API_TOKEN=your_torbox_api_token_here
+   AUTH_KEY=your_secret_auth_key_here
+   DATABASE_URL=postgresql://username:password@hostname/database?sslmode=require
+   ```
+
+5. **Initialize the database**:
+   ```bash
+   python setup_db.py setup
+   ```
+
+6. **Start the bot**:
+   ```bash
+   # Using the enhanced runner (recommended)
+   python run.py
+   
+   # Or directly
+   python main.py
+   ```
 
 ## 🔗 Supported Terabox Domains
 
@@ -43,37 +123,7 @@ The bot accepts links from **multiple Terabox domains** but automatically normal
 
 **Why normalization?** Torbox API only supports the main `terabox.com` domain, so the bot automatically converts alternative domains for API compatibility.
 
-## Prerequisites
-
-- Python 3.9 or higher
-- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
-- A Torbox API token (from [Torbox.app](https://torbox.app))
-
-## Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository_url>
-   cd torboxTG
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   pip install -e .
-   ```
-
-3. **Configure environment variables**:
-   ```bash
-   cp config.env.template .env
-   ```
-   
-   Edit the `.env` file with your credentials:
-   ```env
-   TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-   TORBOX_API_TOKEN=your_torbox_api_token_here
-   ```
-
-## Configuration
+## ⚙️ Configuration
 
 ### Required Environment Variables
 
@@ -81,19 +131,22 @@ The bot accepts links from **multiple Terabox domains** but automatically normal
 |----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Your Telegram bot token from BotFather |
 | `TORBOX_API_TOKEN` | Your Torbox API token |
+| `AUTH_KEY` | Secret key for bot authentication |
+| `DATABASE_URL` | PostgreSQL connection string from Neon.tech |
 
 ### Optional Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TELEGRAM_API_URL` | Empty (optional) | Local Bot API server URL (for bypassing 50MB limit) |
+| `TELEGRAM_API_URL` | Empty | Local Bot API server URL (for bypassing 50MB limit) |
 | `MAX_FILE_SIZE` | `2147483648` (2GB) | Maximum file size in bytes |
 | `DOWNLOAD_TIMEOUT` | `3600` (1 hour) | Download timeout in seconds |
+| `UPLOAD_TIMEOUT` | `1800` (30 min) | Upload timeout in seconds |
 | `TEMP_DIR` | System temp | Temporary directory for downloads |
 
-## Local Bot API Server (Optional)
+## 🔧 Local Bot API Server (Optional)
 
-To bypass Telegram's 50MB file upload limit, you can set up a local Bot API server:
+To bypass Telegram's 50MB file upload limit and enable 2GB uploads:
 
 ### Setup Local Bot API Server
 
@@ -126,153 +179,395 @@ To bypass Telegram's 50MB file upload limit, you can set up a local Bot API serv
 - **Faster uploads**: Direct server communication
 - **Better reliability**: No third-party API rate limits
 
-## Usage
+## 📱 Usage
 
 ### Starting the Bot
 
 ```bash
+# Enhanced startup with validation (recommended)
+python run.py
+
+# Direct startup
 python main.py
 ```
 
+The enhanced runner (`run.py`) provides:
+- ✅ Dependency checking
+- ✅ Environment validation
+- ✅ Database connectivity testing
+- ✅ Comprehensive error reporting
+
 ### Bot Commands
 
-- `/start` - Show welcome message and usage instructions
-- `/help` - Display help information and supported features
-- `/tb <terabox_link>` - Process a Terabox link
-- `/status` - Check your active downloads
+| Command | Description | Availability |
+|---------|-------------|--------------|
+| `/start` | Show welcome message and usage instructions | All users |
+| `/help` | Display help information and supported features | All users |
+| `/auth <key>` | Authenticate with the bot using your auth key | All users |
+| `/status` | Check your active and queued downloads | Authenticated users |
+| `/tb <link>` | Process a Terabox link (groups only) | Authenticated users |
+| `/nuke` | ⚠️ Delete all messages in chat (DANGEROUS!) | Authenticated users/Admins |
 
-### Example Usage
+### Authentication
 
-1. **Basic usage**:
-   ```
-   /tb https://terabox.com/s/1234567890abcdef
-   ```
+Before using the bot, you must authenticate:
 
-2. **The bot will**:
-   - Validate the Terabox link
-   - Send it to Torbox for processing
-   - Monitor the download progress
-   - Download the file when ready
-   - Upload it to Telegram automatically
+```
+/auth your_secret_auth_key_here
+```
 
-## How It Works
+The auth key is set in your `.env` file as `AUTH_KEY`.
 
-1. **Link Processing**: When you send a `/tb` command with a Terabox link, the bot validates the URL
-2. **Torbox Integration**: The link is sent to Torbox via their web download API
-3. **Progress Monitoring**: The bot checks the download status every minute
-4. **File Download**: Once ready, the bot downloads the file to a temporary location
-5. **Telegram Upload**: The file is uploaded to Telegram (as video if it's a video file)
-6. **Cleanup**: Temporary files are automatically cleaned up
+### Usage Examples
 
-## API Endpoints Used
+#### Private Chat
+```
+# Authenticate first
+/auth your_secret_key
 
-The bot uses the following Torbox API endpoints:
-- `POST /webdl/createwebdl` - Create web download
-- `GET /webdl/getwebdlinfo` - Get download information
-- `POST /webdl/requestdl` - Request download link
+# Then simply send Terabox links (no command needed)
+https://terabox.com/s/1234567890abcdef
 
-## Logging
+# Or send multiple links at once
+Check these files:
+https://terabox.com/s/1234567890abcdef
+https://1024terabox.com/s/abcdef1234567890
+```
 
-The bot creates a `torboxtg.log` file with detailed logging information. Logs include:
-- API requests and responses
-- Download progress
-- Error messages
-- File processing status
+#### Group Chat
+```
+# Authenticate first
+/auth your_secret_key
 
-## Error Handling
+# Use the /tb command
+/tb https://terabox.com/s/1234567890abcdef
 
-The bot handles various error scenarios:
-- Invalid Terabox links
-- API rate limits
-- Download failures
-- File size exceeding limits
-- Network timeouts
-- Telegram upload errors
+# Or mention the bot
+@YourBotName https://terabox.com/s/1234567890abcdef
+```
 
-## Rate Limiting
+#### Nuclear Option (Use with EXTREME caution!)
+```
+# In private chat or as group admin
+/nuke
 
-The bot implements rate limiting to respect Torbox API limits:
-- Maximum 10 requests per minute to Torbox API
-- Automatic retry with exponential backoff on rate limit errors
+# Bot will show a warning with confirmation buttons
+# Click "💥 I REALLY WANT TO DO THIS" to proceed
+# This will DELETE ALL MESSAGES the bot can access!
+```
 
-## Development
+## 🔄 How It Works
+
+1. **Authentication**: Users authenticate with a shared secret key
+2. **Link Detection**: Bot automatically detects Terabox links in messages
+3. **Duplicate Check**: Database is checked for previously processed links
+4. **Queue Management**: Downloads are queued if concurrent limit is reached
+5. **Torbox Integration**: Links are sent to Torbox via their web download API
+6. **Progress Monitoring**: Bot checks download status with real-time updates
+7. **File Download**: Once ready, files are downloaded to temporary storage
+8. **Smart Upload**: Files are uploaded as videos or documents based on type
+9. **Database Storage**: Completed downloads are cached for future duplicate detection
+10. **Cleanup**: Temporary files and old database entries are automatically cleaned
+
+## 🗄️ Database Management
+
+### Database Commands
+
+```bash
+# Initialize database tables
+python setup_db.py setup
+
+# View database statistics
+python setup_db.py stats
+
+# Clean up old downloads (keeps 5000 most recent)
+python setup_db.py cleanup
+
+# Show help
+python setup_db.py help
+```
+
+### Database Features
+
+- **Automatic table creation** on first run
+- **Duplicate detection** prevents re-downloading same files
+- **User authentication** persistence across restarts
+- **Download history** with automatic cleanup
+- **Connection pooling** for performance
+- **SSL support** for secure connections
+
+## 📊 Monitoring & Logging
+
+### Log Files
+
+- `torboxtg.log` - Main application logs with rotation
+- Console output with colored status indicators
+- UTF-8 encoding support for international characters
+
+### Status Monitoring
+
+```bash
+# Check download status
+/status
+
+# View database statistics
+python setup_db.py stats
+```
+
+### Progress Indicators
+
+The bot provides real-time progress updates:
+- 🔄 Processing link
+- ⏳ Queued (position shown)
+- 📥 Downloading with progress bar
+- 📤 Uploading to Telegram
+- ✅ Complete with file info
+
+## 🛡️ Security Features
+
+### Authentication System
+- Environment-based auth keys
+- Per-user authentication tracking
+- Database persistence
+
+### Admin Controls
+- Group admin verification for destructive commands
+- Permission-based feature access
+- Secure callback handling
+
+### Nuclear Option Safety
+- Multiple confirmation steps
+- Admin-only in groups
+- Detailed warning messages
+- Security checks and logging
+
+## 🔧 Advanced Configuration
+
+### Queue Management
+
+```python
+# In main.py, adjust these settings:
+self.max_concurrent_downloads = 2  # Concurrent download limit
+```
+
+### Rate Limiting
+
+```python
+# Throttler configuration
+throttler = Throttler(rate_limit=5, period=60)  # 5 requests per minute
+```
+
+### Database Cleanup
+
+```python
+# Automatic cleanup keeps 5000 most recent downloads
+await bot.cleanup_old_downloads()
+```
+
+## 🚀 Deployment
+
+### Production Deployment
+
+1. **Use environment variables** for all configuration
+2. **Set up database** with proper SSL certificates
+3. **Configure logging** with appropriate levels
+4. **Monitor resources** (CPU, memory, disk space)
+5. **Set up process management** (systemd, pm2, etc.)
+
+### Docker Deployment (Optional)
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY . .
+
+RUN pip install -e .
+
+CMD ["python", "run.py"]
+```
+
+### Systemd Service Example
+
+```ini
+[Unit]
+Description=TorboxTG Bot
+After=network.target
+
+[Service]
+Type=simple
+User=torboxbot
+WorkingDirectory=/path/to/torboxTG
+ExecStart=/usr/bin/python3 run.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## 🛠️ Development
 
 ### Project Structure
 
 ```
 torboxTG/
 ├── main.py                 # Main bot implementation
-├── pyproject.toml         # Project dependencies and configuration
-├── README.md              # This file
-├── config.env.template    # Environment variables template
-└── torboxtg.log          # Log file (created at runtime)
+├── database.py             # Database management and models
+├── run.py                  # Enhanced startup runner with validation
+├── setup_db.py             # Database setup and management tools
+├── pyproject.toml          # Project dependencies and configuration
+├── requirements.txt        # Python dependencies
+├── config.env.template     # Environment variables template
+├── README.md              # This documentation
+├── INSTALL.md             # Installation instructions
+└── torboxtg.log           # Log file (created at runtime)
 ```
 
 ### Key Classes
 
 - `TorboxAPI`: Handles all Torbox API interactions
 - `TorboxTelegramBot`: Main bot logic and Telegram integration
+- `DatabaseManager`: Database operations and connection management
+- `CompletedDownload`: Database model for download cache
+- `AuthenticatedUser`: Database model for user authentication
 
-### Adding New Features
+### API Endpoints Used
 
-To add new features:
-1. Implement new methods in the `TorboxTelegramBot` class
-2. Add command handlers in the `create_application` method
-3. Update the help text and README
+The bot uses the following Torbox API endpoints:
+- `POST /webdl/createwebdownload` - Create web download
+- `GET /webdl/mylist` - Get download list and status
+- `GET /webdl/requestdl` - Request download link
 
-## Troubleshooting
+## 🔍 Troubleshooting
 
 ### Common Issues
 
-1. **Bot not responding**:
-   - Check if `TELEGRAM_BOT_TOKEN` is correct
-   - Verify bot is added to the chat
-   - Check logs for errors
+1. **Database Connection Failed**:
+   ```bash
+   # Check your DATABASE_URL format
+   # Ensure Neon.tech database is running
+   # Verify SSL requirements
+   python setup_db.py setup
+   ```
 
-2. **Torbox API errors**:
-   - Verify `TORBOX_API_TOKEN` is valid
-   - Check if you have remaining quota
-   - Review rate limiting errors in logs
+2. **Bot Not Responding**:
+   - Verify `TELEGRAM_BOT_TOKEN` is correct
+   - Check if bot is added to the chat
+   - Ensure users are authenticated with `/auth`
 
-3. **Download failures**:
+3. **Authentication Failed**:
+   - Verify `AUTH_KEY` in environment
+   - Check user used correct auth key
+   - Review authentication logs
+
+4. **Download Failures**:
    - Ensure Terabox link is public and accessible
-   - Check if file size exceeds limits
+   - Check Torbox API quota and limits
    - Verify network connectivity
 
-4. **Upload failures**:
-   - Check if file size exceeds Telegram limits
-   - Verify bot has permission to send files
-   - Review temporary disk space
+5. **Upload Failures**:
+   - Check file size limits (50MB without local API)
+   - Verify bot permissions in chat
+   - Monitor disk space in temp directory
 
 ### Debug Mode
 
-To enable debug logging, modify the logging level in `main.py`:
-```python
-logging.basicConfig(
-    level=logging.DEBUG,  # Change from INFO to DEBUG
-    # ... rest of config
-)
+Enable debug logging by setting environment variable:
+```bash
+export PYTHONPATH=.
+python -c "import logging; logging.basicConfig(level=logging.DEBUG)"
+python main.py
 ```
 
-## Contributing
+### Health Checks
+
+```bash
+# Test database connection
+python -c "from database import init_database; import asyncio; asyncio.run(init_database('your_db_url'))"
+
+# Validate environment
+python run.py --check-only  # If implemented
+
+# Test bot token
+curl -X GET "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getMe"
+```
+
+## 📈 Performance Optimization
+
+### Database Optimization
+- Connection pooling enabled by default
+- Automatic cleanup of old downloads
+- Indexed queries for fast duplicate detection
+- SSL connections for security
+
+### Memory Management
+- Temporary file cleanup after uploads
+- Streaming downloads for large files
+- Async operations prevent blocking
+
+### Network Optimization
+- Rate limiting prevents API abuse
+- Connection reuse for HTTP requests
+- Timeout handling for reliability
+
+## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
 4. Add tests if applicable
-5. Submit a pull request
+5. Update documentation
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
 
-## License
+### Development Setup
+
+```bash
+# Clone your fork
+git clone https://github.com/yourusername/torboxTG.git
+cd torboxTG
+
+# Install in development mode
+pip install -e ".[dev]"
+
+# Set up pre-commit hooks (if available)
+pre-commit install
+```
+
+## 📄 License
 
 This project is open source. Please check the license file for details.
 
-## Disclaimer
+## ⚠️ Disclaimer
 
-This bot is for educational purposes. Ensure you comply with Terabox's terms of service and only download content you have permission to access.
+This bot is for educational and personal use. Users are responsible for:
+- Complying with Terabox's terms of service
+- Only downloading content they have permission to access
+- Respecting copyright and intellectual property rights
+- Following local laws and regulations
 
-## Support
+## 🆘 Support
 
 If you encounter issues:
-1. Check the troubleshooting section
-2. Review the logs for error details
-3. Create an issue with detailed information about the problem
+
+1. **Check the troubleshooting section** above
+2. **Review the logs** for error details (`torboxtg.log`)
+3. **Test your configuration** using the validation tools
+4. **Create an issue** with:
+   - Detailed problem description
+   - Log excerpts (remove sensitive data)
+   - Environment details (OS, Python version)
+   - Steps to reproduce
+
+## 🙏 Acknowledgments
+
+- [Torbox.app](https://torbox.app) for the debrid API
+- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) for the Telegram integration
+- [Neon.tech](https://neon.tech) for PostgreSQL hosting
+- The open-source community for inspiration and tools
+
+---
+
+**Made with ❤️ for the community**

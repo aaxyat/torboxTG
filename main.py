@@ -13,7 +13,9 @@ import logging
 import mimetypes
 import os
 import re
+import signal
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 from urllib.parse import unquote, urlparse
@@ -22,15 +24,19 @@ import aiofiles
 import aiohttp
 from asyncio_throttle import Throttler
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
+
+# Import database module
+from database import close_database, get_db, init_database
 
 # Load environment variables
 load_dotenv()
@@ -51,6 +57,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_API_URL = os.getenv("TELEGRAM_API_URL")  # Optional local Bot API server
 TORBOX_API_TOKEN = os.getenv("TORBOX_API_TOKEN")
 AUTH_KEY = os.getenv("AUTH_KEY")  # Authentication key
+DATABASE_URL = os.getenv("DATABASE_URL")  # Neon.tech PostgreSQL URL
 TORBOX_API_BASE = "https://api.torbox.app/v1/api"
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 2147483648))  # Default 2GB
 DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "3600"))  # 1 hour
@@ -156,39 +163,66 @@ class TorboxTelegramBot:
         self.active_downloads = {}
         self.download_queue = []  # Queue for pending downloads
         self.max_concurrent_downloads = 2  # Limit to 2 concurrent downloads
+        self.completed_downloads = {}  # Cache of completed downloads
+        self.chat_messages = {}  # Track bot messages for cleanup
         self.application = None
         self.authenticated_users: Set[int] = set()
-        self.auth_file = "authenticated_users.json"
-        self.load_authenticated_users()
+        # Database will be initialized separately
+        self.db_initialized = False
 
-    def load_authenticated_users(self):
-        """Load authenticated users from file"""
+    async def load_authenticated_users(self):
+        """Load authenticated users from database"""
         try:
-            if Path(self.auth_file).exists():
-                with open(self.auth_file, "r") as f:
-                    user_list = json.load(f)
-                    self.authenticated_users = set(user_list)
-                logger.info(f"Loaded {len(self.authenticated_users)} authenticated users")
+            if self.db_initialized:
+                db = await get_db()
+                self.authenticated_users = await db.get_authenticated_users()
+                logger.info(
+                    f"Loaded {len(self.authenticated_users)} authenticated users from database"
+                )
         except Exception as e:
             logger.error(f"Error loading authenticated users: {e}")
             self.authenticated_users = set()
 
-    def save_authenticated_users(self):
-        """Save authenticated users to file"""
+    async def save_authenticated_user(self, user_id: int):
+        """Save authenticated user to database"""
         try:
-            with open(self.auth_file, "w") as f:
-                json.dump(list(self.authenticated_users), f)
+            if self.db_initialized:
+                db = await get_db()
+                await db.add_authenticated_user(user_id)
+                self.authenticated_users.add(user_id)
         except Exception as e:
-            logger.error(f"Error saving authenticated users: {e}")
+            logger.error(f"Error saving authenticated user: {e}")
+
+    async def load_download_cache(self):
+        """Load completed downloads cache from database (for startup)"""
+        try:
+            if self.db_initialized:
+                db = await get_db()
+                stats = await db.get_download_stats()
+                logger.info(
+                    f"Database contains {stats['total_downloads']} cached downloads"
+                )
+        except Exception as e:
+            logger.error(f"Error loading download cache: {e}")
+
+    async def cleanup_old_downloads(self):
+        """Clean up old downloads in database"""
+        try:
+            if self.db_initialized:
+                db = await get_db()
+                deleted_count = await db.cleanup_old_downloads(keep_count=5000)
+                if deleted_count > 0:
+                    logger.info(f"Cleaned up {deleted_count} old downloads from database")
+        except Exception as e:
+            logger.error(f"Error cleaning up old downloads: {e}")
 
     def is_user_authenticated(self, user_id: int) -> bool:
         """Check if user is authenticated"""
         return user_id in self.authenticated_users
 
-    def authenticate_user(self, user_id: int):
+    async def authenticate_user(self, user_id: int):
         """Add user to authenticated list"""
-        self.authenticated_users.add(user_id)
-        self.save_authenticated_users()
+        await self.save_authenticated_user(user_id)
         logger.info(f"User {user_id} authenticated successfully")
 
     def get_active_download_count(self) -> int:
@@ -237,6 +271,114 @@ class TorboxTelegramBot:
                 )
             except Exception:
                 pass
+
+    async def is_duplicate_request(self, link: str) -> dict:
+        """Check if this link has been processed before"""
+        try:
+            if self.db_initialized:
+                normalized_link = self.normalize_terabox_url(link)
+                db = await get_db()
+                return await db.get_completed_download(normalized_link)
+            return None
+        except Exception as e:
+            logger.error(f"Error checking duplicate request: {e}")
+            return None
+
+    async def add_completed_download(self, link: str, file_info: dict):
+        """Add a completed download to the database cache"""
+        try:
+            if self.db_initialized:
+                normalized_link = self.normalize_terabox_url(link)
+                db = await get_db()
+                await db.add_completed_download(normalized_link, file_info)
+                logger.info(f"Added completed download to database: {normalized_link}")
+        except Exception as e:
+            logger.error(f"Error adding completed download: {e}")
+
+    def track_bot_message(self, download_id: str, message_id: int):
+        """Track bot messages for later cleanup"""
+        if download_id not in self.chat_messages:
+            self.chat_messages[download_id] = []
+        self.chat_messages[download_id].append(message_id)
+
+    async def cleanup_bot_messages(self, download_id: str, chat_id: int):
+        """Delete all bot messages except the final file"""
+        if download_id not in self.chat_messages:
+            return
+
+        message_ids = self.chat_messages[download_id]
+        deleted_count = 0
+
+        for message_id in message_ids:
+            try:
+                await self.application.bot.delete_message(
+                    chat_id=chat_id, message_id=message_id
+                )
+                deleted_count += 1
+                await asyncio.sleep(0.3)  # Small delay to avoid rate limits
+            except Exception as e:
+                logger.debug(f"Could not delete message {message_id}: {e}")
+
+        # Clean up tracking
+        del self.chat_messages[download_id]
+        logger.info(
+            f"Cleaned up {deleted_count}/{len(message_ids)} bot messages for download {download_id}"
+        )
+
+    async def delete_user_message(self, update: Update):
+        """Delete the user's original message to keep chat clean"""
+        try:
+            await update.message.delete()
+            logger.debug("Deleted user's original message")
+        except Exception as e:
+            logger.debug(f"Could not delete user message: {e}")
+
+    async def delete_message_after_delay(self, chat_id: int, message_id: int, delay: int):
+        """Delete a message after a specified delay"""
+        try:
+            await asyncio.sleep(delay)
+            await self.application.bot.delete_message(
+                chat_id=chat_id, message_id=message_id
+            )
+            logger.debug(f"Deleted message {message_id} after {delay}s delay")
+        except Exception as e:
+            logger.debug(f"Could not delete message {message_id} after delay: {e}")
+
+    async def forward_duplicate_file(self, update: Update, file_info: dict) -> bool:
+        """Forward a previously downloaded file"""
+        try:
+            chat_id = update.effective_chat.id
+            original_message_id = file_info.get("message_id")
+            original_chat_id = file_info.get("chat_id")
+
+            if not original_message_id or not original_chat_id:
+                return False
+
+            # Try to forward the message
+            await self.application.bot.forward_message(
+                chat_id=chat_id,
+                from_chat_id=original_chat_id,
+                message_id=original_message_id,
+            )
+
+            # Send a brief notification that gets deleted quickly
+            notification = await update.message.reply_text(
+                "♻️ **File already processed** - forwarded from cache", parse_mode="Markdown"
+            )
+
+            # Delete notification after 3 seconds
+            await asyncio.sleep(3)
+            try:
+                await notification.delete()
+            except Exception:
+                pass
+
+            logger.info("Successfully forwarded duplicate file from cache")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to forward duplicate file: {e}")
+            return False
 
     def is_terabox_link(self, url: str) -> bool:
         """Check if the URL is a Terabox link"""
@@ -403,7 +545,7 @@ class TorboxTelegramBot:
             return
 
         # Authenticate the user
-        self.authenticate_user(user_id)
+        await self.authenticate_user(user_id)
 
         # Send success message
         success_msg = await update.message.reply_text(
@@ -509,6 +651,7 @@ Type /help for more information.
 • `/start` - Show welcome message
 • `/help` - Show this help
 • `/status` - Check your active downloads
+• `/nuke` - ⚠️ Delete all messages in chat (DANGEROUS!)
 
 **How to Use:**
 • Simply send or paste any message containing Terabox links
@@ -541,6 +684,10 @@ Type /help for more information.
 • Make sure Terabox links are public and accessible
 • Large files may take longer to process
 • Check /status for download progress
+
+**⚠️ Nuclear Option:**
+• `/nuke` - Permanently deletes ALL messages in this chat
+• Use with extreme caution - this action cannot be undone!
             """
         else:
             help_message = f"""
@@ -552,6 +699,7 @@ Type /help for more information.
 • `/help` - Show this help
 • `/tb <link>` - Debrid a Terabox link
 • `/status` - Check your active downloads
+• `/nuke` - ⚠️ Delete all messages in chat (ADMIN ONLY!)
 
 **Group Usage:**
 • Use `/tb <link>` command
@@ -573,6 +721,11 @@ Type /help for more information.
 **Limitations:**
 • Max file size: 2GB • Processing time: Up to 1 hour
 • Terabox links must be public and accessible
+
+**⚠️ Nuclear Option (Admins Only):**
+• `/nuke` - Permanently deletes ALL messages in this group
+• Requires admin permissions to use
+• Use with extreme caution - this action cannot be undone!
             """
 
         await update.message.reply_text(help_message, parse_mode="Markdown")
@@ -630,6 +783,257 @@ Type /help for more information.
             status_message += f"Started: {info.get('started_at', 'N/A')}\n\n"
 
         await update.message.reply_text(status_message, parse_mode="Markdown")
+
+    async def nuke_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /nuke command to delete all messages in chat"""
+        user_id = update.effective_user.id
+
+        # Check authentication first
+        if not self.is_user_authenticated(user_id):
+            await update.message.reply_text(
+                "🔐 **Authentication Required**\n\n"
+                "Please authenticate first using:\n"
+                "```\n/auth <your_key>\n```\n\n"
+                "Contact the bot administrator if you don't have a key.",
+                parse_mode="Markdown",
+            )
+            return
+
+        chat_id = update.effective_chat.id
+        chat_type = self.get_chat_type(update)
+        user_name = update.effective_user.first_name or "User"
+
+        # Check if user has admin permissions in groups
+        if chat_type != "private":
+            try:
+                chat_member = await context.bot.get_chat_member(chat_id, user_id)
+                if chat_member.status not in ["administrator", "creator"]:
+                    await update.message.reply_text(
+                        "❌ **Admin Required**\n\n"
+                        "Only chat administrators can use the nuke command in groups.",
+                        parse_mode="Markdown",
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"Error checking admin status: {e}")
+                await update.message.reply_text(
+                    "❌ **Error**\n\nCould not verify admin permissions.",
+                    parse_mode="Markdown",
+                )
+                return
+
+        # Create confirmation keyboard
+        keyboard = [
+            [
+                InlineKeyboardButton("🚫 Cancel", callback_data="nuke_cancel"),
+                InlineKeyboardButton(
+                    "💥 I REALLY WANT TO DO THIS", callback_data=f"nuke_confirm_{chat_id}"
+                ),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if chat_type == "private":
+            warning_text = (
+                "⚠️ **NUCLEAR WARNING** ⚠️\n\n"
+                f"🎯 **Target**: This private chat\n"
+                f"👤 **Requested by**: {user_name}\n\n"
+                "💥 **This will DELETE ALL MESSAGES** in this chat that the bot can access!\n\n"
+                "🔥 **This action is IRREVERSIBLE!**\n"
+                "🗑️ All bot messages, files, and content will be permanently deleted\n\n"
+                "⚡ Are you absolutely sure you want to proceed?"
+            )
+        else:
+            chat_title = update.effective_chat.title or "this group"
+            warning_text = (
+                "⚠️ **NUCLEAR WARNING** ⚠️\n\n"
+                f"🎯 **Target**: {chat_title}\n"
+                f"👤 **Requested by**: {user_name} (Admin)\n\n"
+                "💥 **This will DELETE ALL MESSAGES** in this group that the bot can access!\n\n"
+                "🔥 **This action is IRREVERSIBLE!**\n"
+                "🗑️ All bot messages, files, and content will be permanently deleted\n"
+                "👥 User messages may also be deleted if bot has admin permissions\n\n"
+                "⚡ Are you absolutely sure you want to proceed?"
+            )
+
+        await update.message.reply_text(
+            warning_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup,
+        )
+
+    async def handle_nuke_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handle nuke confirmation callback"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = query.from_user.id
+        callback_data = query.data
+
+        # Check authentication
+        if not self.is_user_authenticated(user_id):
+            await query.edit_message_text(
+                "❌ **Authentication Required**\n\n"
+                "Please authenticate first using /auth command.",
+                parse_mode="Markdown",
+            )
+            return
+
+        if callback_data == "nuke_cancel":
+            await query.edit_message_text(
+                "✅ **Nuclear Strike Cancelled**\n\n"
+                "The chat remains safe. No messages were deleted.",
+                parse_mode="Markdown",
+            )
+            return
+
+        if callback_data.startswith("nuke_confirm_"):
+            target_chat_id = int(callback_data.split("_")[2])
+            current_chat_id = query.message.chat_id
+
+            if target_chat_id != current_chat_id:
+                await query.edit_message_text(
+                    "❌ **Security Error**\n\n"
+                    "Chat ID mismatch. Operation cancelled for security.",
+                    parse_mode="Markdown",
+                )
+                return
+
+            # Double-check admin permissions for groups
+            if current_chat_id < 0:  # Group chat (negative IDs)
+                try:
+                    chat_member = await context.bot.get_chat_member(
+                        current_chat_id, user_id
+                    )
+                    if chat_member.status not in ["administrator", "creator"]:
+                        await query.edit_message_text(
+                            "❌ **Admin Required**\n\n"
+                            "Only administrators can execute nuclear strikes.",
+                            parse_mode="Markdown",
+                        )
+                        return
+                except Exception as e:
+                    logger.error(f"Error verifying admin status: {e}")
+                    await query.edit_message_text(
+                        "❌ **Error**\n\nCould not verify permissions.",
+                        parse_mode="Markdown",
+                    )
+                    return
+
+            # Execute the nuclear strike
+            await self.execute_nuclear_strike(query, target_chat_id)
+
+    async def execute_nuclear_strike(self, query, chat_id: int):
+        """Execute the nuclear strike - delete all possible messages"""
+        user_name = query.from_user.first_name or "User"
+
+        await query.edit_message_text(
+            "💥 **NUCLEAR STRIKE INITIATED** 💥\n\n"
+            f"🎯 Targeting chat: {chat_id}\n"
+            f"👤 Authorized by: {user_name}\n\n"
+            "🔥 Beginning message deletion...\n"
+            "⏳ This may take several minutes...",
+            parse_mode="Markdown",
+        )
+
+        deleted_count = 0
+        error_count = 0
+        batch_size = 100  # Delete in batches to avoid rate limits
+
+        try:
+            # Get the current message ID as a reference point
+            current_msg = query.message
+            current_msg_id = current_msg.message_id
+
+            # Try to delete messages in both directions from current message
+            # Start from current message and go backwards
+            for msg_id in range(current_msg_id, max(1, current_msg_id - 10000), -1):
+                try:
+                    await self.application.bot.delete_message(
+                        chat_id=chat_id, message_id=msg_id
+                    )
+                    deleted_count += 1
+
+                    # Rate limiting - small delay every few deletions
+                    if deleted_count % 10 == 0:
+                        await asyncio.sleep(0.5)
+
+                    # Update progress every 50 deletions
+                    if deleted_count % 50 == 0:
+                        try:
+                            await current_msg.edit_text(
+                                f"💥 **NUCLEAR STRIKE IN PROGRESS** 💥\n\n"
+                                f"🗑️ Messages deleted: {deleted_count}\n"
+                                f"❌ Errors encountered: {error_count}\n"
+                                f"⏳ Continuing deletion...",
+                                parse_mode="Markdown",
+                            )
+                        except Exception:
+                            pass  # Ignore edit errors during deletion
+
+                except Exception as e:
+                    error_count += 1
+                    # Stop if we hit too many consecutive errors (likely reached end)
+                    if error_count > 50:
+                        break
+                    continue
+
+            # Also try going forward from current message
+            error_count = 0  # Reset error count for forward direction
+            for msg_id in range(current_msg_id + 1, current_msg_id + 1000):
+                try:
+                    await self.application.bot.delete_message(
+                        chat_id=chat_id, message_id=msg_id
+                    )
+                    deleted_count += 1
+
+                    if deleted_count % 10 == 0:
+                        await asyncio.sleep(0.5)
+
+                except Exception as e:
+                    error_count += 1
+                    if error_count > 20:  # Fewer attempts forward
+                        break
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error during nuclear strike: {e}")
+
+        # Send final report
+        try:
+            if chat_id < 0:  # Group chat
+                chat_info = await self.application.bot.get_chat(chat_id)
+                chat_name = chat_info.title or "Group"
+            else:
+                chat_name = "Private Chat"
+
+            final_message = (
+                "☢️ **NUCLEAR STRIKE COMPLETED** ☢️\n\n"
+                f"🎯 **Target**: {chat_name}\n"
+                f"👤 **Authorized by**: {user_name}\n\n"
+                f"📊 **Results**:\n"
+                f"🗑️ Messages deleted: {deleted_count}\n"
+                f"❌ Errors encountered: {error_count}\n\n"
+                f"✅ **Mission accomplished!**\n"
+                f"🧹 The chat has been cleaned."
+            )
+
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=final_message,
+                parse_mode="Markdown",
+            )
+
+        except Exception as e:
+            logger.error(f"Error sending final report: {e}")
+
+        # Log the nuclear strike
+        logger.warning(
+            f"Nuclear strike executed by {user_name} (ID: {query.from_user.id}) "
+            f"in chat {chat_id}. Deleted {deleted_count} messages."
+        )
 
     async def handle_tb_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tb command with Terabox link"""
@@ -747,8 +1151,19 @@ Type /help for more information.
                 await asyncio.sleep(2)
                 await initial_msg.delete()
 
-                # Process all Terabox links found in the message
+                # Delete user message in groups to keep chat clean
+            if self.is_group_chat(update):
+                await self.delete_user_message(update)
+
+            # Process all Terabox links found in the message
             for i, link in enumerate(terabox_links, 1):
+                # Check for duplicates first
+                duplicate_info = await self.is_duplicate_request(link)
+                if duplicate_info:
+                    # Try to forward the existing file
+                    if await self.forward_duplicate_file(update, duplicate_info):
+                        continue  # Skip processing if forward was successful
+
                 if self.can_start_new_download():
                     # Process immediately if we have available slots
                     if len(terabox_links) > 1 and i > 1:
@@ -761,12 +1176,19 @@ Type /help for more information.
 
                     # Notify user about queueing
                     link_preview = link[:50] + ("..." if len(link) > 50 else "")
-                    await update.message.reply_text(
+                    queue_msg = await update.message.reply_text(
                         f"⏳ **Download Queued** (Position: {queue_position})\n\n"
                         f"🔗 Link: `{link_preview}`\n"
                         f"📊 Active downloads: {self.get_active_download_count()}/{self.max_concurrent_downloads}\n"
                         f"🎯 Your download will start automatically when a slot becomes available.",
                         parse_mode="Markdown",
+                    )
+
+                    # Delete queue notification after 10 seconds to keep chat clean
+                    asyncio.create_task(
+                        self.delete_message_after_delay(
+                            update.effective_chat.id, queue_msg.message_id, 10
+                        )
                     )
 
     async def process_terabox_link(self, update: Update, link: str):
@@ -794,6 +1216,8 @@ Type /help for more information.
             initial_text,
             parse_mode="Markdown",
         )
+
+        # We'll track this message for cleanup once we get a download_id
 
         try:
             torbox = TorboxAPI(self.torbox_token)
@@ -844,6 +1268,9 @@ Type /help for more information.
                 "chat_id": update.effective_chat.id,
                 "chat_type": chat_type,
             }
+
+            # Track the processing message for cleanup
+            self.track_bot_message(download_id, processing_msg.message_id)
 
             if is_cached:
                 await processing_msg.edit_text(
@@ -1151,7 +1578,28 @@ Type /help for more information.
             )
 
             # Download and upload file
-            await self.download_and_upload_file(chat_id, download_url, file_name, file_size)
+            uploaded_message = await self.download_and_upload_file(
+                chat_id, download_url, file_name, file_size
+            )
+
+            # Add to completed downloads cache if upload was successful
+            if uploaded_message:
+                file_info = {
+                    "filename": file_name,
+                    "file_size": file_size,
+                    "message_id": uploaded_message.message_id,
+                    "chat_id": chat_id,
+                    "download_url": download_url,
+                }
+
+                # Get original link from download info
+                download_info = self.active_downloads.get(download_id, {})
+                original_link = download_info.get("link")
+                if original_link:
+                    await self.add_completed_download(original_link, file_info)
+
+            # Cleanup bot messages, keeping only the uploaded file
+            await self.cleanup_bot_messages(download_id, chat_id)
 
         except Exception as e:
             logger.error(f"Error handling download completion: {e}")
@@ -1169,10 +1617,11 @@ Type /help for more information.
     async def download_and_upload_file(
         self, chat_id: int, download_url: str, filename: str, file_size: int
     ):
-        """Download file and upload to Telegram"""
+        """Download file and upload to Telegram, returns the uploaded message"""
         import asyncio
 
         temp_file_path = None
+        uploaded_message = None
 
         try:
             # Sanitize filename for safe path construction
@@ -1217,7 +1666,7 @@ Type /help for more information.
             try:
                 if self.is_video_file(filename):
                     with open(temp_file_path, "rb") as video_file:
-                        await asyncio.wait_for(
+                        uploaded_message = await asyncio.wait_for(
                             self.application.bot.send_video(
                                 chat_id=chat_id,
                                 video=video_file,
@@ -1233,7 +1682,7 @@ Type /help for more information.
                         )
                 else:
                     with open(temp_file_path, "rb") as document_file:
-                        await asyncio.wait_for(
+                        uploaded_message = await asyncio.wait_for(
                             self.application.bot.send_document(
                                 chat_id=chat_id,
                                 document=document_file,
@@ -1274,15 +1723,16 @@ Type /help for more information.
                     # Re-raise other upload errors to be handled by outer try-catch
                     raise upload_error
 
-            await self.send_message_to_chat(
-                chat_id, "✅ **Upload completed successfully!**"
-            )
+            # Don't send success message - we'll let the file speak for itself
+            # The file upload is the final message we keep
+            return uploaded_message
 
         except Exception as e:
             logger.error(f"Error downloading/uploading file: {e}")
             await self.send_message_to_chat(
                 chat_id, f"❌ **Upload failed**\n\nError: {str(e)}"
             )
+            return None
 
         finally:
             # Clean up temporary file
@@ -1520,7 +1970,11 @@ Type /help for more information.
             self.application.add_handler(CommandHandler("start", self.start_command))
             self.application.add_handler(CommandHandler("help", self.help_command))
             self.application.add_handler(CommandHandler("status", self.status_command))
+            self.application.add_handler(CommandHandler("nuke", self.nuke_command))
             self.application.add_handler(CommandHandler("tb", self.handle_tb_command))
+            self.application.add_handler(
+                CallbackQueryHandler(self.handle_nuke_callback, pattern="^nuke_")
+            )
             self.application.add_handler(
                 MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
             )
@@ -1528,7 +1982,7 @@ Type /help for more information.
         return self.application
 
 
-def main():
+async def main():
     """Main function to run the bot"""
     # Validate environment variables
     if not TELEGRAM_BOT_TOKEN:
@@ -1544,8 +1998,31 @@ def main():
         logger.error("Please set an authentication key to secure your bot")
         return
 
+    if not DATABASE_URL:
+        logger.error("DATABASE_URL not found in environment variables")
+        logger.error("Please set your Neon.tech PostgreSQL connection string")
+        return
+
+    # Initialize database
+    try:
+        await init_database(DATABASE_URL)
+        logger.info("✅ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database: {e}")
+        return
+
     # Create bot instance
     bot = TorboxTelegramBot(TELEGRAM_BOT_TOKEN, TORBOX_API_TOKEN)
+    bot.db_initialized = True
+
+    # Load data from database
+    try:
+        await bot.load_authenticated_users()
+        await bot.load_download_cache()
+        # Run periodic cleanup
+        await bot.cleanup_old_downloads()
+    except Exception as e:
+        logger.error(f"Error loading data from database: {e}")
 
     # Create application
     application = bot.create_application()
@@ -1566,15 +2043,94 @@ def main():
         logger.info(f"Document upload limit: {bot.format_file_size(document_limit)}")
 
     try:
-        # Start the bot with polling - this handles the event loop internally
-        application.run_polling(drop_pending_updates=True)
+        # Initialize and start the application properly in async context
+        async with application:
+            await application.initialize()
+            await application.start()
+
+            # Start polling
+            await application.updater.start_polling(drop_pending_updates=True)
+
+            logger.info("✅ Bot is now running! Press Ctrl+C to stop.")
+
+            # Keep the bot running with proper signal handling
+            try:
+                # Create a future that will be set when we want to stop
+                stop_event = asyncio.Event()
+
+                # Set up signal handlers for graceful shutdown
+                import platform
+
+                if platform.system() != "Windows":
+                    # Unix-like systems
+                    loop = asyncio.get_running_loop()
+
+                    def signal_handler():
+                        logger.info("Received shutdown signal...")
+                        stop_event.set()
+
+                    for sig in (signal.SIGTERM, signal.SIGINT):
+                        loop.add_signal_handler(sig, signal_handler)
+                else:
+                    # Windows - handle KeyboardInterrupt differently
+                    logger.info("Running on Windows - use Ctrl+C to stop")
+
+                # Wait for stop signal or cancellation
+                try:
+                    await stop_event.wait()
+                except asyncio.CancelledError:
+                    # This is expected when Ctrl+C is pressed - not an error
+                    logger.info("Received shutdown signal...")
+                    pass
+
+            except KeyboardInterrupt:
+                logger.info("Received Ctrl+C, shutting down gracefully...")
+            except Exception as e:
+                logger.error(f"Unexpected error in main loop: {e}")
+            finally:
+                logger.info("🔄 Stopping bot components...")
+                # Stop polling and cleanup
+                try:
+                    await application.updater.stop()
+                    logger.info("✅ Updater stopped")
+                except Exception as e:
+                    logger.error(f"Error stopping updater: {e}")
+
+                try:
+                    await application.stop()
+                    logger.info("✅ Application stopped")
+                except Exception as e:
+                    logger.error(f"Error stopping application: {e}")
+
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("🛑 Received Ctrl+C during startup, shutting down...")
     except Exception as e:
-        logger.error(f"Error running bot: {e}")
+        logger.error(f"❌ Error running bot: {e}")
     finally:
-        logger.info("Bot shutdown complete")
+        logger.info("🔄 Finalizing shutdown...")
+        # Close database connections
+        try:
+            await close_database()
+            logger.info("✅ Database connections closed")
+        except Exception as e:
+            logger.error(f"❌ Error closing database: {e}")
+
+        logger.info("🎯 Bot shutdown complete - All systems stopped cleanly!")
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Suppress the ugly traceback and show a clean message
+        print("\n" + "=" * 50)
+        print("🛑 Bot stopped by user (Ctrl+C)")
+        print("✅ All components shut down gracefully")
+        print("🔄 Cleanup completed successfully")
+        print("=" * 50)
+        sys.exit(0)  # Clean exit
+    except Exception as e:
+        print(f"\n❌ Error starting bot: {e}")
+        sys.exit(1)  # Error exit

@@ -55,7 +55,15 @@ pip install pydantic>=2.0.0
 pip install asyncio-throttle>=1.0.0
 ```
 
-### Step 3: Configure Environment
+### Step 3: Set Up Database
+
+#### Create Neon.tech Database:
+1. Go to [Neon.tech](https://neon.tech) and create a free account
+2. Create a new database project
+3. Copy your PostgreSQL connection string from the dashboard
+4. It should look like: `postgresql://username:password@hostname/database?sslmode=require`
+
+### Step 4: Configure Environment
 
 #### Create configuration file:
 ```bash
@@ -70,6 +78,8 @@ Open `.env` in a text editor and add your tokens:
 ```env
 TELEGRAM_BOT_TOKEN=123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
 TORBOX_API_TOKEN=your_torbox_api_token_here
+AUTH_KEY=your_secret_auth_key_here
+DATABASE_URL=postgresql://username:password@hostname/database?sslmode=require
 
 # Optional settings (use defaults if unsure)
 MAX_FILE_SIZE=2147483648
@@ -77,7 +87,16 @@ DOWNLOAD_TIMEOUT=3600
 TEMP_DIR=/tmp
 ```
 
-### Step 4: Test the Setup
+### Step 5: Initialize Database
+
+#### Setup database tables:
+```bash
+python setup_db.py setup
+```
+
+This will create the necessary tables in your Neon.tech database.
+
+### Step 6: Test the Setup
 
 #### Using the startup script (recommended):
 ```bash
